@@ -38,35 +38,35 @@ def parseFile(filename):
     with open(filename) as file:
         while line := file.readline():
             result = handleUnusedFileLine(line)
-            if not result:
+            if result is None:
                 result = handleUsedFileLine(line)
-            if not result:
+            if result is None:
                 result = handleParentModuleLine(line)
 
             global currentFile
             
-            if result and result['type'] == 'Used':
+            if result is not None and result['type'] == 'Used':
                 stateTo(STATE_USED)
                 currentFile = result['file']
-                if recordFiles.get(currentFile):
+                if currentFile in recordFiles:
                     raise RuntimeError('Duplicated used file: ' + currentFile)
                 recordFiles[currentFile] = { 'data': result, 'parent': {}, 'children': {} }
-            elif result and result['type'] == 'Unused':
+            elif result is not None and result['type'] == 'Unused':
                 stateTo(STATE_UNUSED)
                 currentFile = result['file']
-                if recordFiles.get(currentFile):
+                if currentFile in recordFiles:
                     raise RuntimeError('Duplicated unused file: ' + currentFile)
                 recordFiles[currentFile] = { 'data': result, 'parent': {}, 'children': {} }
-            elif result and result['type'] == 'Parent':
+            elif result is not None and result['type'] == 'Parent':
                 stateTo(STATE_PARENT)
                 info = recordFiles.get(currentFile)
-                if not info:
+                if info is None:
                     raise RuntimeError('No current file found for parent module parsing.')
 
                 data = result['file'].split(' ')
                 if len(data) > 1:
                     methods = info['parent'].get(data[0])
-                    if not methods:
+                    if methods is None:
                         methods = set()
                     methods.add(data[1])
                     info['parent'][data[0]] = methods
@@ -117,9 +117,9 @@ def processData():
     for file, data in recordFiles.items():
         for parent, methods in data['parent'].items():
             record = recordFiles.get(parent)
-            if not record:
+            if record is None:
                 record = tempFiles.get(parent)
-            if not record:
+            if record is None:
                 record = { 'data': { 'type': 'Temp', 'number': 0, 'file': parent, 'cost': 0 }, 'parent': {}, 'children': {} }
             record['children'][file] = {}
             record['children'][file]['cost'] = data['data']['cost']
@@ -132,17 +132,20 @@ def processData():
 
     for file, data in recordFiles.items():
         for child, cost in data['children'].items():
-            updateChildrenCost(file, data, child, cost['cost'])
+            updateChildrenCost(file, data, child, cost['cost'], 0)
     updateCost()
 
 
-def updateChildrenCost(file, data, childFile, childCost):
+def updateChildrenCost(file, data, childFile, childCost, index):
+    if file == childFile:
+        return
     cost = costFiles.get(file)
-    if not cost:
+    if cost is None:
         cost = { 'children': {} }
     else:
-        if cost['children'].get(childFile):
+        if childFile in cost['children']:
             return
+
 
     cost['children'][childFile] = childCost
 
@@ -150,8 +153,8 @@ def updateChildrenCost(file, data, childFile, childCost):
 
     for parent, methods in data['parent'].items():
         record = recordFiles.get(parent)
-        if record:
-            updateChildrenCost(parent, record, childFile, childCost)
+        if record is not None:
+            updateChildrenCost(parent, record, childFile, childCost, index + 1)
 
 
 def updateCost():
@@ -163,20 +166,20 @@ def updateCost():
 
     for file, data in recordFiles.items():
         cost = costFiles.get(file)
-        if cost:
+        if cost is not None:
             data['cost'] = data['data']['cost'] + cost['cost']
         else:
             data['cost'] = data['data']['cost']
 
         for child, childCost in data['children'].items():
             cost = costFiles.get(child)
-            if cost:
+            if cost is not None:
                 childCost['cost'] += cost['cost']
                 for friend, _ in data['children'].items():
                     if child == friend:
                         continue
                     friendCost = costFiles.get(friend)
-                    if friendCost:
+                    if friendCost is not None:
                         (unionType, totalCost) = getUnionChildrenCost(child, cost, friend, friendCost)
                         if unionType > 0:
                             childCost['friend'][friend] = {}
@@ -198,16 +201,16 @@ def getUnionChildrenCost(file, cost, friendFile, friendCost):
     # 3: shared
     unionType = 0
     totalCost = 0
-    if cost['children'].get(friendFile):
+    if friendFile in cost['children']:
         unionType = 1
         totalCost += recordFiles[friendFile]['data']['cost']
-    if friendCost['children'].get(file):
+    if file in friendCost['children']:
         unionType = 2
         totalCost += recordFiles[file]['data']['cost']
     for f, c in cost['children'].items():
         if f == friendFile:
             continue
-        if friendCost['children'].get(f):
+        if f in friendCost['children']:
             if unionType == 0:
                 unionType = 3
             totalCost += c
