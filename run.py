@@ -23,15 +23,25 @@ STATE_PARENT = 3
 currentState = STATE_INIT
 
 recordFiles = {}
-costFiles = {}
+relationFiles = {}
+testSet = set()
 
 currentFile = None
 
 def parseArgs():
     parser = argparse.ArgumentParser('Harmony Import Analysis')
     parser.add_argument('-f', '--file', dest='file')
+    parser.add_argument('-t', '--test', dest='test')
     parser.add_argument('-o', dest='output', default = "./result")
     return parser.parse_args()
+
+
+def parseTest(filename):
+    if filename is None:
+        return
+    with open(filename) as file:
+        while line := file.readline():
+            testSet.add(line.strip())
 
 
 def parseFile(filename):
@@ -121,101 +131,90 @@ def processData():
                 record = tempFiles.get(parent)
             if record is None:
                 record = { 'data': { 'type': 'Temp', 'number': 0, 'file': parent, 'cost': 0 }, 'parent': {}, 'children': {} }
-            record['children'][file] = {}
-            record['children'][file]['cost'] = data['data']['cost']
-            record['children'][file]['friend'] = {}
+                tempFiles[parent] = record
 
-            tempFiles[parent] = record
+            record['children'][file] = {}
+            record['children'][file]['type'] = data['data']['type']
 
     for file, data in tempFiles.items():
         recordFiles[file] = data
 
     for file, data in recordFiles.items():
-        for child, cost in data['children'].items():
-            updateChildrenCost(file, data, child, cost['cost'], 0)
+        for childFile, _ in data['children'].items():
+            if childFile in recordFiles:
+                updateChildren(file, data, childFile, 0)
+    updateRelationShip()
     updateCost()
 
 
-def updateChildrenCost(file, data, childFile, childCost, index):
+def updateChildren(file, data, childFile, index):
     if file == childFile:
         return
-    cost = costFiles.get(file)
-    if cost is None:
-        cost = { 'children': {} }
+    children = relationFiles.get(file)
+    if children is None:
+        children = {}
+        relationFiles[file] = children
     else:
-        if childFile in cost['children']:
+        if childFile in children:
             return
 
+    children[childFile] = 'Unknown'
 
-    cost['children'][childFile] = childCost
+    for parentFile, _ in data['parent'].items():
+        if parentFile in recordFiles:
+            updateChildren(parentFile, recordFiles.get(parentFile), childFile, index + 1)
 
-    costFiles[file] = cost
 
-    for parent, methods in data['parent'].items():
-        record = recordFiles.get(parent)
-        if record is not None:
-            updateChildrenCost(parent, record, childFile, childCost, index + 1)
+def updateRelationShip():
+    for parent, children in relationFiles.items():
+        for child, type in children.items():
+            if type == 'Unknown':
+                record = recordFiles.get(child)
+                if record is not None:
+                    isSingle = True
+                    for parentFile, _ in record['parent'].items():
+                        if parent == parentFile:
+                            continue
+                        if parentFile in children:
+                            continue
+                        isSingle = False
+                    if isSingle:
+                        children[child] = 'Single'
+                    else:
+                        children[child] = 'Shared'
+                        later = relationFiles.get(child)
+                        if later is not None:
+                            for c, _ in later.items():
+                                if c in children:
+                                    children[c] = 'Shared'
 
 
 def updateCost():
-    for file, data in costFiles.items():
-        totalCost = 0
-        for child, cost in data['children'].items():
-            totalCost += cost
-        data['cost'] = totalCost
-
-    for file, data in recordFiles.items():
-        cost = costFiles.get(file)
-        if cost is not None:
-            data['cost'] = data['data']['cost'] + cost['cost']
-        else:
-            data['cost'] = data['data']['cost']
-
-        for child, childCost in data['children'].items():
-            cost = costFiles.get(child)
-            if cost is not None:
-                childCost['cost'] += cost['cost']
-                for friend, _ in data['children'].items():
-                    if child == friend:
-                        continue
-                    friendCost = costFiles.get(friend)
-                    if friendCost is not None:
-                        (unionType, totalCost) = getUnionChildrenCost(child, cost, friend, friendCost)
-                        if unionType > 0:
-                            childCost['friend'][friend] = {}
-                            childCost['friend'][friend]['cost'] = totalCost
-                            if unionType == 1:
-                                childCost['friend'][friend]['type'] = 'In'
-                            elif unionType == 2:
-                                childCost['friend'][friend]['type'] = 'Out'
-                            elif unionType == 3:
-                                childCost['friend'][friend]['type'] = 'Shared'
-                            else:
-                                childCost['friend'][friend]['type'] = 'Unknown'
-
-
-def getUnionChildrenCost(file, cost, friendFile, friendCost):
-    # 0: unknown
-    # 1: in
-    # 2: out
-    # 3: shared
-    unionType = 0
-    totalCost = 0
-    if friendFile in cost['children']:
-        unionType = 1
-        totalCost += recordFiles[friendFile]['data']['cost']
-    if file in friendCost['children']:
-        unionType = 2
-        totalCost += recordFiles[file]['data']['cost']
-    for f, c in cost['children'].items():
-        if f == friendFile:
+    for parent, children in relationFiles.items():
+        parentData = recordFiles.get(parent)
+        if parentData is None:
             continue
-        if f in friendCost['children']:
-            if unionType == 0:
-                unionType = 3
-            totalCost += c
+        cost = parentData['data']['cost']
+        for child, type in children.items():
+            if type == 'Unknown':
+                raise RuntimeError('Unknown type of child(' + child + ') in parent(' + parent + ')')
+            if type == 'Single':
+                childData = recordFiles.get(child)
+                if childData is None:
+                    continue
+                cost += childData['data']['cost']
+        parentData['cost'] = cost
 
-    return (unionType, totalCost)
+    for parent, parentData in recordFiles.items():
+        cost = parentData.get('cost')
+        if cost is None:
+            parentData['cost'] = 0
+
+    for parent, parentData in recordFiles.items():
+        for child, childInfo in parentData['children'].items():
+            childData = recordFiles.get(child)
+            if childData is not None:
+                childInfo['cost'] = childData['cost']
 
 
 def printData(output):
@@ -254,9 +253,6 @@ def printData(output):
                         type = child['data']['type']
                     f.write('    |-> ({}) {} {}'.format(type, childFile, childData['cost']))
                     f.write('\n')
-                    for friendFile, friendData in childData['friend'].items():
-                        f.write('      |-> ({}) {} {}'.format(friendData['type'], friendFile, friendData['cost']))
-                        f.write('\n')
             else:
                 f.write('    |-> (Empty)')
                 f.write('\n')
@@ -270,8 +266,55 @@ def printData(output):
             f.write('\n')
 
 
+def printTest():
+    children = {}
+    for test in testSet:
+        c = relationFiles.get(test)
+        if c is not None:
+            for child, _ in c.items():
+                children[child] = 'Unknown'
+
+    for child, type in children.items():
+        if type == 'Unknown':
+            record = recordFiles.get(child)
+            if record is not None:
+                isSingle = True
+                for parentFile, _ in record['parent'].items():
+                    if parentFile in testSet:
+                        continue
+                    if parentFile in children:
+                        continue
+                    isSingle = False
+                if isSingle:
+                    children[child] = 'Single'
+                else:
+                    children[child] = 'Shared'
+                    later = relationFiles.get(child)
+                    if later is not None:
+                        for c, _ in later.items():
+                            if c in children:
+                                children[c] = 'Shared'
+
+    cost = 0
+    for child, type in children.items():
+        if type == 'Single':
+            childData = recordFiles.get(child)
+            if childData is None:
+                continue
+            cost += childData['data']['cost']
+    for test in testSet:
+        testData = recordFiles.get(test)
+        if testData is None:
+            continue
+        cost += testData['data']['cost']
+
+    print('cost: ' + str(cost))
+
+
 if __name__ == '__main__':
     args = parseArgs()
     parseFile(args.file)
     processData()
     printData(args.output)
+    parseTest(args.test)
+    printTest()
