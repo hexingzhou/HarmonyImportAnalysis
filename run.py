@@ -24,6 +24,7 @@ currentState = STATE_INIT
 
 recordFiles = {}
 relationFiles = {}
+moduleFiles = {}
 entryFiles = {}
 
 entrySet = set()
@@ -34,6 +35,8 @@ def parseArgs():
     parser = argparse.ArgumentParser('Harmony Import Analysis')
     parser.add_argument('-f', '--file', dest='file')
     parser.add_argument('-e', '--entry', dest='entry')
+    parser.add_argument('-i', '--index', dest='index', type=int, default=10)
+    parser.add_argument('-p', '--point', dest='point', default='')
     parser.add_argument('-c', '--count', dest='count', type=int, default=0)
     parser.add_argument('-o', '--output',dest='output', default="./result")
     return parser.parse_args()
@@ -151,6 +154,34 @@ def processData():
 
 def processEntryData(count):
     updateEntry(count)
+
+
+def processModuleData(point, index):
+    points = point.split('/')
+    for file, data in recordFiles.items():
+        array = file.split('/')
+        path = ''
+        i = 0
+        p = True
+        for step in array:
+            if step in points:
+                p = False
+            if i > index:
+                p = False
+            if i > 0:
+                path = path + '/'
+            path = path + step
+            moduleData = moduleFiles.get(path)
+            if moduleData is None:
+                moduleData = {'index': i, 'files': set(), 'cost': 0, 'used': 0, 'unused': 0, 'point': p}
+                moduleFiles[path] = moduleData
+            moduleData['files'].add(file)
+            moduleData['cost'] += data['data']['cost']
+            if data['data']['type'] == 'Used':
+                moduleData['used'] += data['data']['cost']
+            elif data['data']['type'] == 'Unused':
+                moduleData['unused'] += data['data']['cost']
+            i += 1
 
 
 def updateRelation():
@@ -356,11 +387,21 @@ def printData(output):
             f.write('{};{:.3f};{:.3f};{:.3f}'.format(entry, entryData['cost'], entryData['used'], entryData['unused']))
             f.write('\n')
 
+    with open(Path(output) / 'result_module.csv', 'w') as f:
+        f.write('Path;Cost;Used;Unused')
+        f.write('\n')
+        for module, moduleData in moduleFiles.items():
+            if not moduleData['point']:
+                continue
+            f.write('{};{:.3f};{:.3f};{:.3f}'.format(module, moduleData['cost'], moduleData['used'], moduleData['unused']))
+            f.write('\n')
+
 
 if __name__ == '__main__':
     args = parseArgs()
-    parseEntry(args.entry)
     parseFile(args.file)
     processData()
+    processModuleData(args.point, args.index)
+    parseEntry(args.entry)
     processEntryData(args.count)
     printData(args.output)
