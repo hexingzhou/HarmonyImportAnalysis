@@ -24,24 +24,30 @@ currentState = STATE_INIT
 
 recordFiles = {}
 relationFiles = {}
-testSet = set()
+entryFiles = {}
+
+entrySet = set()
 
 currentFile = None
 
 def parseArgs():
     parser = argparse.ArgumentParser('Harmony Import Analysis')
     parser.add_argument('-f', '--file', dest='file')
-    parser.add_argument('-t', '--test', dest='test')
-    parser.add_argument('-o', dest='output', default = "./result")
+    parser.add_argument('-e', '--entry', dest='entry')
+    parser.add_argument('-c', '--count', dest='count', type=int, default=0)
+    parser.add_argument('-o', '--output',dest='output', default="./result")
     return parser.parse_args()
 
 
-def parseTest(filename):
+def parseEntry(filename):
     if filename is None:
         return
     with open(filename) as file:
         while line := file.readline():
-            testSet.add(line.strip())
+            line = line.strip()
+            if line.startswith('//') or line.startswith('#'):
+                continue
+            entrySet.add(line)
 
 
 def parseFile(filename):
@@ -139,82 +145,160 @@ def processData():
     for file, data in tempFiles.items():
         recordFiles[file] = data
 
+    updateRelation()
+    updateRecordCost()
+
+
+def processEntryData(count):
+    updateEntry(count)
+
+
+def updateRelation():
     for file, data in recordFiles.items():
         for childFile, _ in data['children'].items():
             if childFile in recordFiles:
-                updateChildren(file, data, childFile, 0)
-    updateRelationShip()
-    updateCost()
-
-
-def updateChildren(file, data, childFile, index):
-    if file == childFile:
-        return
-    children = relationFiles.get(file)
-    if children is None:
-        children = {}
-        relationFiles[file] = children
-    else:
-        if childFile in children:
-            return
-
-    children[childFile] = 'Unknown'
-
-    for parentFile, _ in data['parent'].items():
-        if parentFile in recordFiles:
-            updateChildren(parentFile, recordFiles.get(parentFile), childFile, index + 1)
-
-
-def updateRelationShip():
-    for parent, children in relationFiles.items():
-        for child, type in children.items():
-            if type == 'Unknown':
-                record = recordFiles.get(child)
-                if record is not None:
-                    isSingle = True
-                    for parentFile, _ in record['parent'].items():
-                        if parent == parentFile:
-                            continue
-                        if parentFile in children:
-                            continue
-                        isSingle = False
-                    if isSingle:
-                        children[child] = 'Single'
-                    else:
-                        children[child] = 'Shared'
-                        later = relationFiles.get(child)
-                        if later is not None:
-                            for c, _ in later.items():
-                                if c in children:
-                                    children[c] = 'Shared'
-
-
-def updateCost():
+                collectChildrenInRelation(file, data, childFile)
+    
     for parent, children in relationFiles.items():
         parentData = recordFiles.get(parent)
         if parentData is None:
-            continue
+            raise RuntimeError('No record of ' + parent)
+
+        for child, _ in parentData['children'].items():
+            findShareTypeInRelation(parent, children, child)
+
+
+def collectChildrenInRelation(parent, parentData, child):
+    if parent == child:
+        return
+
+    children = relationFiles.get(parent)
+    if children is None:
+        children = {}
+        relationFiles[parent] = children
+    else:
+        if child in children:
+            return
+
+    children[child] = 'Unknown'
+
+    for parentFile, _ in parentData['parent'].items():
+        if parentFile in recordFiles:
+            collectChildrenInRelation(parentFile, recordFiles.get(parentFile), child)
+
+
+def findShareTypeInRelation(parent, children, child):
+    # Check child.
+    if children[child] == 'Unknown':
+        record = recordFiles.get(child)
+        if record is None:
+            children[child] = 'Single'
+            return
+        single = True
+        for parentFile, _ in record['parent'].items():
+            if parent == parentFile:
+                continue
+            if parentFile in children:
+                continue
+            single = False
+        if single:
+            children[child] = 'Single'
+            # Continue check children of the child.
+            for childFile, _ in record['children'].items():
+                if childFile in children:
+                    findShareTypeInRelation(parent, children, childFile)
+        else:
+            children[child] = 'Shared'
+            for childFile, _ in record['children'].items():
+                if childFile in children:
+                    setSharedInRelation(parent, children, childFile)
+
+
+def setSharedInRelation(parent, children, child):
+    if children[child] == 'Unknown':
+        children[child] = 'Shared'
+        record = recordFiles.get(child)
+        if record is None:
+            return
+        for childFile, _ in record['children'].items():
+            if childFile in children:
+                setSharedInRelation(parent, children, childFile)
+
+
+def updateRecordCost():
+    for parent, parentData in recordFiles.items():
         cost = parentData['data']['cost']
-        for child, type in children.items():
-            if type == 'Unknown':
-                raise RuntimeError('Unknown type of child(' + child + ') in parent(' + parent + ')')
-            if type == 'Single':
-                childData = recordFiles.get(child)
-                if childData is None:
-                    continue
-                cost += childData['data']['cost']
+        children = relationFiles.get(parent)
+        if children is not None:
+            for child, relation in children.items():
+                if relation == 'Unknown':
+                    raise RuntimeError('Unknown relation type of child(' + child + ') in parent(' + parent + ')')
+                if relation == 'Single':
+                    childData = recordFiles.get(child)
+                    if childData is not None:
+                        cost += childData['data']['cost']
         parentData['cost'] = cost
 
-    for parent, parentData in recordFiles.items():
-        cost = parentData.get('cost')
-        if cost is None:
-            parentData['cost'] = 0
-
+    # Copy parent cost to the children of other parents in record list.
     for parent, parentData in recordFiles.items():
         for child, childInfo in parentData['children'].items():
             childData = recordFiles.get(child)
             if childData is not None:
                 childInfo['cost'] = childData['cost']
+
+
+def updateEntry(count):
+    for entry in entrySet:
+        for file, data in recordFiles.items():
+            if entry in file:
+                entryFiles[file] = {'cost': 0, 'used': 0, 'unused': 0, 'children': {}}
+                break
+
+    for entry, entryData in entryFiles.items():
+        entryChildren = relationFiles.get(entry)
+        if entryChildren is None:
+            continue
+        for child, relation in entryChildren.items():
+            if relation == 'Single':
+                entryData['children'][child] = 0
+            else:
+                entryData['children'][child] = 1
+        for child, relation in entryData['children'].items():
+            if relation == 0:
+                continue
+            result = relation
+            for parent, _ in entryFiles.items():
+                if entry == parent:
+                    continue
+                parentChildren = relationFiles.get(parent)
+                if parentChildren is not None:
+                    if child in parentChildren:
+                        result += 1
+            entryData['children'][child] = result
+
+    for entry, entryData in entryFiles.items():
+        cost = 0
+        used = 0
+        unused = 0
+        record = recordFiles.get(entry)
+        if record is not None:
+            cost += record['data']['cost']
+            if record['data']['type'] == 'Used':
+                used += record['data']['cost']
+            elif record['data']['type'] == 'Unused':
+                unused += record['data']['cost']
+        for child, c in entryData['children'].items():
+            if c <= count:
+                childData = recordFiles.get(child)
+                if childData is not None:
+                    cost += childData['data']['cost']
+                    if childData['data']['type'] == 'Used':
+                        used += childData['data']['cost']
+                    elif childData['data']['type'] == 'Unused':
+                        unused += childData['data']['cost']
+        entryData['cost'] = cost
+        entryData['used'] = used
+        entryData['unused'] = unused
 
 
 def printData(output):
@@ -225,7 +309,7 @@ def printData(output):
 
     with open(Path(output) / 'result_tree', 'w') as f:
         for file, data in recordFiles.items():
-            f.write('({}) {} {}'.format(data['data']['type'], file, data['cost']))
+            f.write('({}) {} {:.3f}'.format(data['data']['type'], file, data['cost']))
             f.write('\n')
             f.write('  Parents:')
             f.write('\n')
@@ -251,7 +335,7 @@ def printData(output):
                     child = recordFiles.get(childFile)
                     if child:
                         type = child['data']['type']
-                    f.write('    |-> ({}) {} {}'.format(type, childFile, childData['cost']))
+                    f.write('    |-> ({}) {} {:.3f}'.format(type, childFile, childData['cost']))
                     f.write('\n')
             else:
                 f.write('    |-> (Empty)')
@@ -262,59 +346,21 @@ def printData(output):
         f.write('Type;File;Cost;Parent;Children')
         f.write('\n')
         for file, data in recordFiles.items():
-            f.write('{};{};{};{};{}'.format(data['data']['type'], file, data['cost'], len(data['parent']), len(data['children'])))
+            f.write('{};{};{:.3f};{};{}'.format(data['data']['type'], file, data['cost'], len(data['parent']), len(data['children'])))
             f.write('\n')
 
-
-def printTest():
-    children = {}
-    for test in testSet:
-        c = relationFiles.get(test)
-        if c is not None:
-            for child, _ in c.items():
-                children[child] = 'Unknown'
-
-    for child, type in children.items():
-        if type == 'Unknown':
-            record = recordFiles.get(child)
-            if record is not None:
-                isSingle = True
-                for parentFile, _ in record['parent'].items():
-                    if parentFile in testSet:
-                        continue
-                    if parentFile in children:
-                        continue
-                    isSingle = False
-                if isSingle:
-                    children[child] = 'Single'
-                else:
-                    children[child] = 'Shared'
-                    later = relationFiles.get(child)
-                    if later is not None:
-                        for c, _ in later.items():
-                            if c in children:
-                                children[c] = 'Shared'
-
-    cost = 0
-    for child, type in children.items():
-        if type == 'Single':
-            childData = recordFiles.get(child)
-            if childData is None:
-                continue
-            cost += childData['data']['cost']
-    for test in testSet:
-        testData = recordFiles.get(test)
-        if testData is None:
-            continue
-        cost += testData['data']['cost']
-
-    print('cost: ' + str(cost))
+    with open(Path(output) / 'result_entry.csv', 'w') as f:
+        f.write('File;Cost;Used;Unused')
+        f.write('\n')
+        for entry, entryData in entryFiles.items():
+            f.write('{};{:.3f};{:.3f};{:.3f}'.format(entry, entryData['cost'], entryData['used'], entryData['unused']))
+            f.write('\n')
 
 
 if __name__ == '__main__':
     args = parseArgs()
+    parseEntry(args.entry)
     parseFile(args.file)
     processData()
+    processEntryData(args.count)
     printData(args.output)
-    parseTest(args.test)
-    printTest()
